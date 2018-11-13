@@ -4,7 +4,35 @@ This code implements speech synthesis with WaveNet using pytorch. This code is p
 ## Requirements
 pytorch: 0.4.0
 
+## Data preparation
+VCTK Corpus includes 44,352 speech sentences uttered by 109 native English speakers. Each utterance last for a few seconds. Download VCTK dataset from https://homepages.inf.ed.ac.uk/jyamagis/page3/page58/page58.html. The dataset looks like:
+
+<pre>
+dataset_dir
+├── wav48
+│    ├── p225
+│    │     ├── p225_001.wav
+│    │     └── ...
+│    ├── p226
+│    │     ├── p226_001.wav
+│    │     └── ...
+│    └── ...
+├── txt
+│    ├── p225
+│    │     ├── p225_001.txt
+│    │     └── ...
+│    ├── p226
+│    │     ├── p226_001.txt
+│    │     └── ...
+│    └── ...
+├── speaker-info.txt
+└── ...
+
+</pre>
+
 ## Run
+Modify the paths in runme.sh
+
 Run commands in runme.sh line by line. 
 
 ## Results

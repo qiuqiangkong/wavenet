@@ -32,7 +32,7 @@ def _loss_func(output, target):
       target: (batch_size, seq_len, quantize_bins)
     '''
     loss = F.nll_loss(
-        output.view(-1, output.shape[-1]), target.view(target.shape[-1]))
+        output.view(-1, output.shape[-1]), target.contiguous().view(-1))
         
     return loss
 
@@ -75,11 +75,11 @@ def train(args):
     dataset_dir = args.dataset_dir
     workspace = args.workspace
     filename = args.filename
+    batch_size = args.batch_size  # Use an audio clip as a mini-batch. Must 
+                                  # be 1 if audio clips has different length. 
     condition = args.condition
     cuda = args.cuda
-    
-    batch_size = 1  # Use an audio clip as a mini-batch. Must be 1 if audio 
-                    # clips has different length. 
+        
     quantize_bins = config.quantize_bins
     dilations = config.dilations
     
@@ -89,10 +89,9 @@ def train(args):
     create_folder(models_dir)
 
     # Data Generator
-    Dataset = get_dataset('vctk')
-    
+    Dataset = get_dataset(dataset)
     train_dataset = Dataset(dataset_dir, data_type='train')    
-    validate_dataset = VCTKDataset(dataset_dir, data_type='validate')
+    validate_dataset = Dataset(dataset_dir, data_type='validate')
     
     train_loader = torch.utils.data.DataLoader(train_dataset, 
         batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True)
@@ -107,7 +106,7 @@ def train(args):
                     skip_channels=config.skip_channels, 
                     quantize_bins=config.quantize_bins, 
                     global_condition_channels=config.global_condition_channels, 
-                    global_condition_cardinality=config.global_condition_cardinality, 
+                    global_condition_cardinality=Dataset.global_condition_cardinality, 
                     use_cuda=cuda)
 
     if cuda:
@@ -118,9 +117,10 @@ def train(args):
                            eps=1e-08, weight_decay=0.)
 
     train_bgn_time = time.time()
+    iteration = 0
 
     while True:
-        for (iteration, (batch_x, global_condition)) in enumerate(train_loader):
+        for (batch_x, global_condition) in train_loader:
             '''batch_x: (batch_size, seq_len)
             global_condition: (batch_size,)
             '''
@@ -177,21 +177,24 @@ def train(args):
             
             print('loss: {:.3f}'.format(loss.data.cpu().numpy()))
             
+            iteration += 1
+            
      
 def generate(args):
     
     np.random.seed(1234)
     
     # Arugments & parameters
+    dataset = args.dataset
     workspace = args.workspace
     iteration = args.iteration
     samples = args.samples
+    batch_size = args.batch_size
     global_condition = args.global_condition
     fast_generate = args.fast_generate
     cuda = args.cuda
     filename = args.filename
     
-    batch_size = 1
     quantize_bins = config.quantize_bins
     dilations = config.dilations
     
@@ -201,16 +204,17 @@ def generate(args):
     else:
         condition = True
         global_condition = torch.LongTensor([global_condition] * batch_size)
+        # global_condition = torch.LongTensor(np.arange(batch_size))
         if cuda:
             global_condition = global_condition.cuda()
     
     # Paths
     model_path = os.path.join(workspace, 'models', 'dataset={}'.format(dataset), 
-                              filename, 'condition={}'.format(condition), 
-                              'md_{}_iters.tar'.format(iteration))
+        filename, 'condition={}'.format(condition), 
+        'md_{}_iters.tar'.format(iteration))
                               
-    generated_wavs_dir = os.path.join(workspace, 'generated_wavs', filename, 
-                                      'condition={}'.format(condition))
+    generated_wavs_dir = os.path.join(workspace, 'generated_wavs', 
+        'dataset={}'.format(dataset), filename, 'condition={}'.format(condition))
                                       
     create_folder(generated_wavs_dir)
     
@@ -221,7 +225,7 @@ def generate(args):
                     skip_channels=config.skip_channels, 
                     quantize_bins=config.quantize_bins, 
                     global_condition_channels=config.global_condition_channels, 
-                    global_condition_cardinality=config.global_condition_cardinality, 
+                    global_condition_cardinality=get_dataset(dataset).global_condition_cardinality, 
                     use_cuda=cuda)
     
     checkpoint = torch.load(model_path)
@@ -251,32 +255,29 @@ def generate(args):
     if fast_generate:
         with torch.no_grad():
             model.eval()
-            audio = model.fast_generate(buffer=buffer, 
+            audios = model.fast_generate(buffer=buffer, 
                                         samples=samples, 
                                         global_condition=global_condition)
         
     else:
         with torch.no_grad():
             model.eval()
-            audio = model.slow_generate(buffer=buffer, 
+            audios = model.slow_generate(buffer=buffer, 
                                         global_condition=global_condition, 
                                         samples=samples)
     
     print('Generate_time: {:.3f} s'.format(time.time() - generate_time))
     
-    audio = audio.data.cpu().numpy()
+    audios = audios.data.cpu().numpy()
 
     # Transform to wave
-    audio = audio[0]
-    audio = _quantize.inverse_transform(audio)
-    audio = _mulaw.inverse_transform(audio)
-        
-    audio_path = os.path.join(generated_wavs_dir, 'iter_{}.wav'.format(iteration))
-    write_audio(audio_path, audio, config.sample_rate)
-    print('Generate wav to {}'.format(audio_path))
-    
-    plt.plot(audio)
-    plt.show()
+    for n in range(batch_size):
+        audio = audios[n]
+        audio = _quantize.inverse_transform(audio)
+        audio = _mulaw.inverse_transform(audio)
+        audio_path = os.path.join(generated_wavs_dir, 'iter_{}_{}.wav'.format(iteration, n))
+        write_audio(audio_path, audio, config.sample_rate)
+        print('Generate wav to {}'.format(audio_path))
 
 
 if __name__ == '__main__':
@@ -287,6 +288,7 @@ if __name__ == '__main__':
     parser_train.add_argument('--dataset', type=str, required=True)
     parser_train.add_argument('--dataset_dir', type=str, required=True)
     parser_train.add_argument('--workspace', type=str, required=True)
+    parser_train.add_argument('--batch_size', type=int, required=True)
     parser_train.add_argument('--condition', action='store_true', default=False)
     parser_train.add_argument('--cuda', action='store_true', default=False)
     
@@ -295,7 +297,8 @@ if __name__ == '__main__':
     parser_generate.add_argument('--workspace', type=str, required=True)
     parser_generate.add_argument('--iteration', type=int, required=True)
     parser_generate.add_argument('--samples', type=int, required=True)
-    parser_generate.add_argument('--global_condition', type=int, required=True)
+    parser_generate.add_argument('--batch_size', type=int, required=True)
+    parser_generate.add_argument('--global_condition', type=int, default=-1)
     parser_generate.add_argument('--fast_generate', action='store_true', default=False)
     parser_generate.add_argument('--cuda', action='store_true', default=False)
     

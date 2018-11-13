@@ -162,7 +162,7 @@ class WaveNet(nn.Module):
         quantize_bins = self.quantize_bins
         
         # One-hot encoding
-        x = sparse_to_categorical(input.view(-1), quantize_bins, self.use_cuda)
+        x = sparse_to_categorical(input.contiguous().view(-1), quantize_bins, self.use_cuda)
         x = x.view((batch_size, seq_len, quantize_bins))
         x = x.transpose(1, 2)   
         '''(batch_size, quantize_bins, seq_len)'''
@@ -250,8 +250,8 @@ class WaveNet(nn.Module):
                 global_condition=global_condition, queues=None)
             '''(batch_size, 1, quantize_bins)'''
             
-            prob = torch.exp(log_prob[0, 0])
-            next_sample = torch.multinomial(input=prob, num_samples=1, replacement=True)
+            prob = torch.exp(log_prob[:, 0, :])
+            next_sample = self.sample(prob)
             buffer = torch.cat((buffer, next_sample.view(batch_size, 1)), dim=-1)
             
         return buffer
@@ -323,7 +323,8 @@ class WaveNet(nn.Module):
         for t in tqdm(range(samples)):
             
             x = buffer[:, -2:]  # Fast generation only need to feed last 2 samples
-            x = sparse_to_categorical(x.view(-1), quantize_bins, self.use_cuda)
+            x = x.contiguous().view(-1)
+            x = sparse_to_categorical(x, quantize_bins, self.use_cuda)
             x = x.view((batch_size, 2, quantize_bins))
             x = x.transpose(1, 2)   
             '''(batch_size, quantize_bins, seq_len)'''
@@ -354,11 +355,9 @@ class WaveNet(nn.Module):
             x = self.dict['postprocess2'](x)
             x = F.log_softmax(x.transpose(1, 2), dim=-1) 
 
-            log_prob = torch.exp(x)
-        
-            next_sample = torch.multinomial(input=log_prob[0, 0], num_samples=1, replacement=True)
-            next_sample = next_sample[:, None]
-            buffer = torch.cat((buffer, next_sample), dim=-1)
+            prob = torch.exp(x)
+            next_sample = self.sample(prob)
+            buffer = torch.cat((buffer, next_sample.view(batch_size, 1)), dim=-1)
         
         return buffer
         
@@ -368,6 +367,16 @@ class WaveNet(nn.Module):
         out = layer(x)
         layer.dilation = dilation
         return out
+        
+    def sample(self, prob):
+        batch_size = prob.shape[0]
+        next_sample = []
+        for n in range(batch_size):
+            next_sample.append(
+                torch.multinomial(input=prob[n], num_samples=1, replacement=True))
+                
+        next_sample = torch.cat(next_sample)
+        return next_sample
         
         
 class Queue(object):
